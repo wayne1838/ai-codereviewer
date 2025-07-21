@@ -1,20 +1,48 @@
-name: Code Review with OpenAI
+name: PR Code Review
+
 on:
   pull_request:
-    types:
-      - opened
-      - synchronize
-permissions: write-all
+    types: [opened, synchronize]
+    branches:
+      - develop
+
+permissions:
+  contents: read
+  pull-requests: write
+
 jobs:
-  code_review:
+  review:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v3
-      - name: Code Review
-        uses: wayne1838/ai-codereviewer@main
-        with:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENAI_API_MODEL: "gpt-4.1-nano"
-          exclude: "yarn.lock,dist/**"
+
+      - name: Review and Comment
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
+
+          FILES=$(gh pr diff ${{ github.event.pull_request.number }} --name-only)
+          DIFF=""
+          
+          for FILE in $FILES; do
+            FILE_DIFF=$(gh pr diff ${{ github.event.pull_request.number }} -- $FILE | head -n 100)
+            DIFF="$DIFF\n\n===== $FILE =====\n$FILE_DIFF"
+          done
+
+          PROMPT="用中文審查以下程式碼變更，列出具體改善建議。簡潔明確，不贅述。以下是 diff：\n\n$DIFF"
+
+          REQUEST_DATA=$(jq -Rn --arg text "$PROMPT" '{
+            model: "GPT-4.1 nano",
+            messages: [
+              { "role": "system", "content": "你是嚴謹的程式碼審查員，擅長 .NET Core、React、TypeScript，請針對以下差異給予具體、實用的建議" },
+              { "role": "user", "content": $text }
+            ]
+          }')
+
+          RESPONSE=$(curl -s -X POST https://api.openai.com/v1/chat/completions \
+            -H "Authorization: Bearer ${{ secrets.OPENAI_API_KEY }}" \
+            -H "Content-Type: application/json" \
+            -d "$REQUEST_DATA")
+
+          COMMENT=$(echo "$RESPONSE" | jq -r '.choices[0].message.content')
+          gh pr comment ${{ github.event.pull_request.number }} --body "$COMMENT"
